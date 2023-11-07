@@ -353,3 +353,475 @@ int main() {
 ```
 
 - **用途**：用于**启动一个新程序**，替代当前进程的执行。
+
+# 进程等待
+
+> 在Linux操作系统中，进程管理是一个关键的概念，父进程通常需要等待其子进程完成任务。例如，创建子进程执行任务，子进程在父进程前退出，此时会产生**僵尸进程**， 若不对其进行处理会导致资源浪费，同时，我们也可能需要获取子进程的退出结果等。本章节将介绍如何通过引入僵尸进程来理解进程等待，并深入探讨 `wait` 和 `waitpid` 系等统调用（僵尸进程等概念读者可以阅读之前的进程状态篇）。
+
+## 为何需要等待
+
+> 父进程需要等待其子进程结束，以便**正确处理子进程的退出状态和资源回收**。如果父进程不等待子进程，系统无法清理子进程的退出状态信息，这会导致僵尸进程的累积。进程等待是实现进程之间协同工作、通信和资源管理的重要机制。
+
+## 引入僵尸进程
+
+**简单的示例来演示如何引入僵尸进程**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+int main()
+{
+    // 创建子进程
+    pid_t child_pid = fork();
+
+    if (child_pid < 0)
+    {
+        perror("Fork fail!\n");
+        exit(1);
+    }
+
+    if (child_pid == 0)
+    {
+        // 子进程
+        int cnt = 5;
+        while (cnt)
+        {
+            printf("I'am child process, pid:%d, ppid:%d, cnt:%d\n", getpid(), getppid(), cnt--);
+            sleep(1);
+        }
+        exit(0);
+    }
+    else if (child_pid > 0)
+    {
+        // 父进程
+        sleep(10); // 父进程休眠10秒，模拟未等待子进程的情况
+    }
+
+    return 0;
+}
+```
+
+### **运行结果**
+
+```bash
+[MeMoo@VM-16-4-centos wait]$ gcc -o wait wait.c -std=c99
+[MeMoo@VM-16-4-centos wait]$ ./wait 
+I'am child process, pid:28671, ppid:28670, cnt:5
+I'am child process, pid:28671, ppid:28670, cnt:4
+I'am child process, pid:28671, ppid:28670, cnt:3
+I'am child process, pid:28671, ppid:28670, cnt:2
+I'am child process, pid:28671, ppid:28670, cnt:1
+[MeMoo@VM-16-4-centos wait]$ 
+```
+
+### **脚本监控**
+
+```bash
+[MeMoo@VM-16-4-centos wait]$ while :; do
+>   ps axj | head -1
+>   ps axj | grep wait | grep -v grep
+>   sleep 1
+> done
+// 前五秒子进程父进程正常运行
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+// 此处开始子进程退出，父进程正常运行，僵尸进程产生
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820 28670 28670 23820 pts/4    28670 S+    1002   0:00 ./wait
+28670 28671 28670 23820 pts/4    28670 Z+    1002   0:00 [wait] <defunct>
+// 此处父进程也退出，但是没有对僵尸进程进行处理，
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+```
+
+> 在这个示例中，父进程创建了一个子进程，但它**没有等待子进程**，而是休眠10秒，这导致子进程运行大概五秒退出后成为僵尸进程。从脚本结果的后半部分可以看出，子进程处于僵尸状态（**Z+**），直至父进程结束任然没有被处理。
+
+## **`wait` 系统调用**
+
+> `wait` 函数是一个系统调用，用于**等待子进程结束并获取其退出状态**。
+
+```c
+#include <sys/types.h>
+#include <sys/wait.h>
+
+pid_t wait(int *status);
+```
+
+- `status` 参数是一个指向整数的指针，用于存储子进程的退出状态信息。
+- `wait` 函数的返回值是已经结束执行的子进程的PID，如果没有子进程结束执行或者发生错误，返回值为 `-1`。
+
+**让我们使用`wait`函数对上面的僵尸进程示例进行等待处理：**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main()
+{
+    // 创建子进程
+    pid_t child_pid = fork();
+
+    if (child_pid < 0)
+    {
+        perror("Fork fail!\n");  // 如果fork失败，输出错误信息
+        exit(1);
+    }
+
+    if (child_pid == 0)
+    {
+        // 子进程
+        int cnt = 5;
+        while (cnt)
+        {
+            printf("I'm the child process, pid:%d, parent pid:%d, count:%d\n", getpid(), getppid(), cnt--);
+            sleep(1);
+        }
+        exit(0); // 子进程退出
+    }
+    else if (child_pid > 0)
+    {
+        // 父进程
+        sleep(10); // 父进程休眠10秒，模拟未等待子进程的情况
+
+        // 获取子进程退出状态
+        int status = 0;
+        pid_t res = wait(&status); // 等待子进程退出，并获取退出状态
+        if (res > 0)
+        {
+            printf("Wait successfully! Child exit code:%d, signal:%d\n", (status >> 8) & 0xFF, status & 0x7F);
+            // 输出等待成功的信息以及子进程的退出状态和信号
+        }
+    }
+
+    return 0;
+}
+```
+
+**`ps:` 此处的`status`参数后续进行讲解，此处先使用其来证明子进程被等待。**
+
+### 运行结果
+
+```bash
+[MeMoo@VM-16-4-centos wait]$ gcc -o wait wait.c -std=c99
+[MeMoo@VM-16-4-centos wait]$ ./wait 
+I'm the child process, pid:2057, parent pid:2056, count:5
+I'm the child process, pid:2057, parent pid:2056, count:4
+I'm the child process, pid:2057, parent pid:2056, count:3
+I'm the child process, pid:2057, parent pid:2056, count:2
+I'm the child process, pid:2057, parent pid:2056, count:1
+Wait successfully! Child exit code:0, signal:0
+[MeMoo@VM-16-4-centos wait]$ 
+```
+
+### 脚本监控
+
+```bash
+[MeMoo@VM-16-4-centos wait]$ while :; do
+>   ps axj | head -1
+>   ps axj | grep wait | grep -v grep
+>   sleep 1
+> done
+// 前五秒子进程父进程正常运行
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ // 此处开始子进程退出，父进程正常运行，僵尸进程产生
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 Z+    1002   0:00 [wait] <defunct>
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ 2056  2057  2056 23820 pts/4     2056 Z+    1002   0:00 [wait] <defunct>
+ // 此处父进程对僵尸进程进行等待处理
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+23820  2056  2056 23820 pts/4     2056 S+    1002   0:00 ./wait
+// 此处父进程也正常退出
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+ PPID   PID  PGID   SID TTY      TPGID STAT   UID   TIME COMMAND
+```
+
+> 在父进程中，`wait` 调用会等待子进程结束，获取其退出状态，并存储在 `status` 变量中。
+
+## `waitpid` 函数
+
+> `waitpid` 函数也用于等待子进程结束，但它提供了**更多的控制选项。**
+
+```c
+#include <sys/types.h>
+#include <sys/wait.h>
+
+pid_t waitpid(pid_t pid, int *status, int options);
+```
+
+- `pid` 参数用于指定等待的子进程，可以使用不同值，**如 `0` 表示等待任意子进程**，**特定的进程ID表示等待具体的子进程**。
+- `status` 参数是一个指向整数的指针，用于存储子进程的退出状态信息（输出型参数）。
+- `options` 参数是一个整数，允许设置各种选项，如非阻塞等待等。
+- `waitpid` 函数的返回值是已经结束执行的子进程的PID，如果没有子进程结束执行或者发生错误，返回值为 `-1`。
+
+**代码与`wait`大同小异，仅仅变换函数接口。**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main()
+{
+    // 创建子进程
+    pid_t child_pid = fork();
+
+    if (child_pid < 0)
+    {
+        perror("Fork fail!\n"); // 如果fork失败，输出错误信息
+        exit(1);
+    }
+
+    if (child_pid == 0)
+    {
+        // 子进程
+        int cnt = 5;
+        while (cnt)
+        {
+            printf("I'm the child process, pid:%d, parent pid:%d, count:%d\n", getpid(), getppid(), cnt--);
+            sleep(1);
+        }
+        exit(0); // 子进程退出
+    }
+    else if (child_pid > 0)
+    {
+        // 父进程
+        sleep(10); // 父进程休眠10秒，模拟未等待子进程的情况
+
+        // 获取子进程退出状态
+        int status = 0;
+        pid_t res = waitpid(child_pid, &status, 0); // 等待子进程退出，并获取退出状态
+        if (res > 0)
+        {
+            printf("Wait successfully! Child exit code:%d, signal:%d\n", (status >> 8) & 0xFF, status & 0x7F);
+            // 输出等待成功的信息以及子进程的退出状态和信号
+        }
+
+        // 便于脚本查看子进程是否正常被等待成功
+        sleep(5);
+    }
+
+    return 0;
+}
+```
+
+## 运行结果
+
+```c
+[MeMoo@VM-16-4-centos wait]$ gcc -o wait wait.c -std=c99
+[MeMoo@VM-16-4-centos wait]$ ./wait 
+I'm the child process, pid:4687, parent pid:4686, count:5
+I'm the child process, pid:4687, parent pid:4686, count:4
+I'm the child process, pid:4687, parent pid:4686, count:3
+I'm the child process, pid:4687, parent pid:4686, count:2
+I'm the child process, pid:4687, parent pid:4686, count:1
+Wait successfully! Child exit code:0, signal:0
+[MeMoo@VM-16-4-centos wait]$ 
+```
+
+- 在这个示例中，父进程使用 `waitpid` 函数等待特定的子进程，分别获取它们的退出状态。
+
+**`ps:` 此处不再对脚本结果进行展示，读者可自行验证。**
+
+> 这些函数是在Linux中用于进程等待和处理子进程退出状态的重要工具。使用 `wait` 和 `waitpid` 函数，父进程可以等待子进程的结束，获取其退出状态，从而正确处理进程间的协同工作。
+
+## **`status`**参数位图结构
+
+> **在Linux系统中，`status` 是一个整数，用于存储子进程的退出状态信息。**
+
+- **32位系统上**，`status` 是一个32位整数，其结构如下：
+
+```bash
+ 31                            8 7 6 5 4 3 2 1 0
++---------------------------------------------+
+|            退出状态码         |    退出方式   |
++---------------------------------------------+
+```
+
+- **64位系统上**，`status` 是一个64位整数，结构如下：
+
+```bash
+ 63                            32 31                            8 7 6 5 4 3 2 1 0
++-----------------------------+---------------------------------------------+
+|      保留位 (0)            |            退出状态码         |    退出方式   |
++-----------------------------+---------------------------------------------+
+```
+
+无论是32位还是64位系统，`退出状态码` 表示子进程的退出状态，通常是子进程的 `main` 函数中返回的整数值。这个状态码**通常在0到255之间**，所以在上面获取子进程退出码时使用`(status >> 8) & 0xFF`，但可以有其他值。
+
+`退出方式` 表示子进程的退出方式，其中不同的位表示不同的信息。具体来说：
+
+- **低7位**用于包含信号编号，如果子进程是因为**信号终止**而退出的。**如果子进程正常退出，这些位将被清零。**
+- 最高位（**第8位**）用于表示退出方式，如果子进程正常退出，这一位将被设置为1，否则为0。正常退出表示子进程通过调用 `exit` 函数（`_exit`函数）或 `return` 语句退出。
+
+这些位图结构的设计允许在 `status` 中存储有关子进程退出的多种信息，包括退出状态码和退出方式。父进程可以使用 `wait` 或 `waitpid` 函数来解释这些位，以确定子进程的退出状态和方式。通常，`WIFEXITED(status)` 和 `WEXITSTATUS(status)` 可以用于检查和提取这些信息。如果子进程是由信号终止的，可以使用 `WIFSIGNALED(status)` 和 `WTERMSIG(status)` 来获取更多关于终止子进程的信息。
+
+> 总之，32位和64位系统上的 `status` 结构相似，但64位系统使用更多的位来存储信息，以容纳更多的信息。
+
+**status获取相关信息的方式：**
+
+`(status >> 8) & 0xFF` 和 `status & 0x7F` 是用于提取 `status` 变量中不同部分的位掩码操作。这些操作通常用于获取子进程的退出状态和退出方式的详细信息。
+
+- `(status >> 8) & 0xFF` 的作用是右移 `status` 中的位8位，并使用掩码 `0xFF`（二进制为 11111111）来保留最低8位。这将提取 `status` 中的退出状态码部分。
+- `status & 0x7F` 使用掩码 `0x7F`（二进制为 01111111）来保留 `status` 中的最低7位，这些位通常用于存储子进程的终止信号编号。
+
+具体来说，这些操作可以用于以下情况：
+
+- `(status >> 8) & 0xFF` 用于提取子进程的退出状态码。退出状态码通常是子进程 `main` 函数返回的整数值，它描述了子进程的正常终止状态。例如，如果子进程以 `exit(42)` 退出，那么 `(status >> 8) & 0xFF` 将提取出值42。
+- `status & 0x7F` 用于提取子进程的退出方式，通常是终止信号编号。如果子进程是由于接收了信号而终止，这个操作将提取出相应的信号编号。例如，如果子进程因为接收到 `SIGTERM` 信号而终止，那么 `status & 0x7F` 将提取出 `SIGTERM` 信号的编号。
+
+> 这两个操作一起允许父进程获取子进程退出的详细信息，包括退出状态码和退出方式（是否是信号终止），以便进一步处理和分析子进程的退出情况。
+
+**相关退出信息获取系统接口：**
+
+### `WIFEXITED(status)`：
+
+```c
+int WIFEXITED(int status);
+```
+
+- `WIFEXITED` 是一个宏，用于检查 `status` 变量是否表示子进程正常退出。
+- `status` 是包含子进程退出信息的整数，通常是从 `wait` 或 `waitpid` 中获取的。
+- 返回值是一个非零值（真），表示子进程正常退出；如果返回0，表示子进程不是正常退出。
+
+使用示例：
+
+```c
+if (WIFEXITED(status)) {
+    // 子进程正常退出
+    // 可以使用 WEXITSTATUS 获取子进程的退出状态码
+} else {
+    // 子进程不是正常退出，可能是因为接收信号而终止
+}
+```
+
+### `WEXITSTATUS(status)`：
+
+```c
+int WEXITSTATUS(int status);
+```
+
+- `WEXITSTATUS` 用于获取子进程的退出状态码，这通常是子进程的 `main` 函数的返回值。
+- `status` 是包含子进程退出信息的整数，通常是从 `wait` 或 `waitpid` 中获取的。
+- 返回值是子进程的退出状态码。
+
+使用示例：
+
+```c
+if (WIFEXITED(status)) {
+    int exit_status = WEXITSTATUS(status);
+    printf("子进程正常退出，退出状态码: %d\n", exit_status);
+} else {
+    // 处理子进程不是正常退出的情况
+}
+```
+
+### `WIFSIGNALED(status)`：
+
+```c
+int WIFSIGNALED(int status);
+```
+
+- `WIFSIGNALED` 是一个宏，用于检查 `status` 变量是否表示子进程因接收信号而终止。
+- `status` 是包含子进程退出信息的整数，通常是从 `wait` 或 `waitpid` 中获取的。
+- 返回值是一个非零值（真），表示子进程因接收信号而终止；如果返回0，表示子进程不是因信号而终止。
+
+使用示例：
+
+```c
+if (WIFSIGNALED(status)) {
+    // 子进程因接收信号而终止
+    // 可以使用 WTERMSIG 获取信号编号
+} else {
+    // 子进程正常退出或其他情况
+}
+```
+
+### `WTERMSIG(status)`：
+
+```c
+int WTERMSIG(int status);
+```
+
+- `WTERMSIG` 用于获取导致子进程终止的信号的编号。
+- `status` 是包含子进程退出信息的整数，通常是从 `wait` 或 `waitpid` 中获取的。
+- 返回值是导致子进程终止的信号的编号。
+
+使用示例：
+
+```c
+if (WIFSIGNALED(status)) {
+    int signal_number = WTERMSIG(status);
+    printf("子进程因信号 %d 而终止\n", signal_number);
+} else {
+    // 子进程正常退出或其他情况
+}
+```
+
+> 这些函数和宏一起用于检查和提取子进程的退出状态和方式，以便根据不同情况进行相应的处理。
