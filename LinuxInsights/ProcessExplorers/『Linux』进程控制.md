@@ -825,3 +825,155 @@ if (WIFSIGNALED(status)) {
 ```
 
 > 这些函数和宏一起用于检查和提取子进程的退出状态和方式，以便根据不同情况进行相应的处理。
+
+# 进程替换
+
+> Linux中的进程替换是指一个正在运行的进程**被另一个程序替代为新的进程**。进程替换通常用于执行不同的程序，而不是创建一个新的进程来运行它。这可以用于执行新版本的程序、切换到不同的应用程序，或者在不关闭当前进程的情况下切换到不同的任务。**进程替换是在一个现有进程的上下文中进行的**，因此它继承了许多属性，如进程ID、环境变量等。
+
+**在Linux中，可以使用以下方法进行进程替换：**
+
+## `exec`函数族
+
+> exec函数族（如`execv`、`execp`、`execl`等）是用于执行新程序的标准方法。这些函数可以在当前进程中加载一个新的可执行文件，并将控制传递给新程序。在替换进程时，当前进程的内存映像和资源将被替换为新程序的内容。
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+
+int main() {
+    char *args[] = {"ls", "-l", NULL};
+    execvp("ls", args);
+    return 0; // 这一行不会执行，因为进程已经被替换
+}
+```
+
+**示例将当前进程替换为运行`ls -l`命令的新进程。**
+
+> `exec`函数族是用于在`Linux`和`UNIX`系统上执行新程序的一组函数。它们允许一个进程在不创建新进程的情况下替换自身的映像，从而执行不同的程序。**`exec`函数族包括多个不同的函数，它们的接口略有不同，以满足不同的需求。**以下是一些常见的`exec`函数：
+
+1. `int execl(const char *path, const char *arg0, ... /* (char *) NULL */);`
+   
+   - 这个函数接受**可变数量的字符串参数**，最后一个参数**必须**是`NULL`。它用于执行一个指定路径的可执行文件，传递给新程序的参数在参数列表中指定。
+   
+   ```c
+   #include <stdio.h>
+   #include <unistd.h>
+   
+   int main() {
+       execl("/bin/ls", "ls", "-l", NULL);
+       return 0; // 这一行不会执行，因为进程已被替换（除非参数传递错误）
+   }
+   ```
+   
+2. `int execv(const char *path, char *const argv[]);`
+   
+   - 这个函数接受**可执行文件的路径**和一个**字符串数组**作为参数，数组中的第一个元素通常是可执行文件的名称，后面跟随命令行参数。
+   
+   ```c
+   #include <stdio.h>
+   #include <unistd.h>
+   
+   int main() {
+       char *args[] = {"ls", "-l", NULL};
+       execv("/bin/ls", args);
+       return 0; // 这一行不会执行，因为进程已被替换
+   }
+   ```
+   
+3. `int execle(const char *path, const char *arg0, ... /* (char *) NULL, char *const envp[] */);`
+   
+   - 这个函数与`execl`类似，但它还允许您传递一个**环境变量数组**。
+   
+   ```c
+   #include <stdio.h>
+   #include <unistd.h>
+   
+   int main() {
+       char *args[] = {"ls", "-l", NULL};
+       char *env[] = {"PATH=/usr/bin", NULL};
+       execle("/bin/ls", "ls", "-l", NULL, env);
+       return 0; // 这一行不会执行，因为进程已被替换
+   }
+   ```
+   
+4. `int execvp(const char *file, char *const argv[]);`
+   - 这个函数与`execv`类似，但它会在`PATH`环境变量中查找可执行文件，而**不需要提供完整的文件路径**。
+
+   ```c
+   #include <stdio.h>
+   #include <unistd.h>
+   
+   int main() {
+       char *args[] = {"ls", "-l", NULL};
+       execvp("ls", args);
+       return 0; // 这一行不会执行，因为进程已被替换
+   }
+   ```
+
+5. `int execve(const char *path, char *const argv[], char *const envp[]);`
+   - 这个函数接受**可执行文件的路径**、**参数数组**和**环境变量数组**，它提供了**最灵活的选项**。
+
+   ```c
+   #include <stdio.h>
+   #include <unistd.h>
+   
+   int main() {
+       char *args[] = {"ls", "-l", NULL};
+       char *env[] = {"PATH=/usr/bin", NULL};
+       execve("/bin/ls", args, env);
+       return 0; // 这一行不会执行，因为进程已被替换
+   }
+   ```
+
+> 这些`exec`函数族的**主要区别在于参数传递方式和是否支持环境变量的传递**。在调用这些函数后，当前进程的映像将被替换为新程序，新程序将从`main`函数或其他入口点开始执行，原进程的上下文将**被丢弃**。这使得进程可以在不创建新进程的情况下执行新的程序，非常有用，**例如在shell中执行命令时，shell会使用`exec`来启动命令。**
+
+**`exec`函数族的不同函数之间主要有以下区别：**
+
+1. **接口参数差异**：
+   - `execl`和`execlp`接受可变数量的字符串参数，最后一个参数必须是`NULL`。这使得它们适合于在编译时已知参数的情况。
+   - `execv`和`execvp`接受一个**字符串数组**（通常称为`argv`）作为参数，第一个元素通常是可执行文件的名称，后跟命令行参数。这使它们更适合于运行时动态生成参数的情况。
+   - `execle`和`execve`与上述函数类似，但还接受一个额外的环境变量数组（通常称为`envp`）作为参数，**以允许在新程序中自定义环境变量**。
+
+2. **文件查找方式**：
+   - `execl`和`execle`需要提供完整的文件路径，因为它们不会查找`PATH`环境变量中的可执行文件。
+   - `execv`和`execve`需要提供完整的文件路径，因此也不会查找`PATH`环境变量中的可执行文件。
+   - `execlp`和`execvp`会查找`PATH`环境变量中的可执行文件，因此**只需要提供可执行文件的名称即可。**
+
+3. **环境变量传递**：
+   - `execl`和`execv`不支持传递环境变量数组，因此新程序将继承当前进程的环境变量。
+   - `execle`和`execve`允许传递**一个自定义的环境变量数组，以覆盖或添加到新程序的环境变量。**
+   - `execlp`和`execvp`不支持传递环境变量数组，新程序将继承当前进程的环境变量。
+
+4. **文件查找方式**：
+   - `execl`和`execlp`是以列表方式传递参数的。
+   - `execv`和`execvp`是以数组方式传递参数的。
+
+> 总的来说，可以根据具体的需求来选择适合的`exec`函数。**如果需要更多的灵活性和控制，`execve`通常是最合适的选择，因为它允许自定义参数和环境变量，并需要提供完整的文件路径。**如果只需要执行一个外部程序，而不需要自定义环境变量，`execlp`和`execvp`可以更加简便，因为它们会查找`PATH`中的可执行文件。
+
+## `fork`和`exec`
+
+> 另一种进行进程替换的方法是使用`fork`创建一个子进程，然后在**子进程中**使用`exec`来替换新的程序。
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+
+int main() {
+    pid_t child_pid = fork();
+    if (child_pid == 0) {
+        // 这是子进程
+        char *args[] = {"ls", "-l", NULL};
+        execvp("ls", args);
+    } else if (child_pid > 0) {
+        // 这是父进程，可以进行其他操作
+        // 等待子进程完成
+        wait(NULL);
+    } else {
+        // 处理fork失败的情况
+        perror("Fork failed");
+    }
+    return 0;
+}
+```
+
+> 至此，我们可以利用现有的知识制作一个简易`shell`，具体代码与解析读者可移步笔者`GitHub`查看详情。
